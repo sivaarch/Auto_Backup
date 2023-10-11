@@ -22,6 +22,15 @@ Version History:
 21/09/2023 - Higher level entities like database/schema's will be created automatically.
              This is to avoid manual creation of target database/schema where backup need to
              be created.
+11/10/2023 - Added new column exclusion_tables which is useful to add tables which need to 
+             be excluded from backup process. This is applicable for schema/database level backups
+             and while taking PHYSICAL backup, But not CLONE
+
+             Also added another column target_backup_type which is defaulted to TRANSIENT. Now user 
+             can choose to create PERMANENT tables as well.
+
+             SP is limited to TABLE_TYPEs BASE TABLE. Apart from Standard base tables rest of the objects
+             are not in scope
 Please read user manual carefully before configuring backups and scheduling
 \****************************************************************************************/
   RETURNS STRING
@@ -49,6 +58,10 @@ AS $$
   var formattedTableNameRes = "";
   var sourceTableFormatted = "";
   var finalResult = "";  
+  var targetBackupType = "";  
+  var sourceTableNames = "";  
+  var exclusionTableNames = "";  
+  var tablesQuery = "";  
   try {
   
      //  Return date in YYYYMMDD_HHMMSS
@@ -102,7 +115,8 @@ AS $$
         split_part(backup_target_nm,'.',2) as tgt_part2,
         split_part(backup_target_nm,'.',3) as tgt_part3,
         backup_id as backupID,
-        source_table_nm
+        exclusion_tables,
+        target_backup_type
         FROM `+DB_NAME+`.`+SCHEMA_NAME+`.BACKUP_TBL
         WHERE enabled_ind = 1;
         `;    
@@ -125,16 +139,26 @@ AS $$
       targetNm_1 = rs.getColumnValue(16);
       targetNm_2 = rs.getColumnValue(17);
       targetNm_3 = rs.getColumnValue(18);
-      backupID = rs.getColumnValue(19);
-        
+      backupID = rs.getColumnValue(19);      
+      exclusionTableNames = rs.getColumnValue(20);
+      targetBackupType = rs.getColumnValue(21);
+
+      if (exclusionTableNames != "") {
+          exclusionTableNames = exclusionTableNames.replace(/,/g, '\',\'');
+          tablesQuery += ` AND TABLE_NAME NOT IN ('`+ exclusionTableNames +`')`;
+      }
+      if (targetBackupType != "TRANSIENT")
+          targetBackupType = "";
+      
       if (giventargetDBNm == sourceNm_1)
       {
           finalResult = "Source Database and Target Database cannot be same"; 
           result = "Failed";
       }
       else if (backupMode == "CLONE") {
-           if (backupType == "TABLE"){
-              sqlCmd = `CREATE TRANSIENT DATABASE IF NOT EXISTS "` + giventargetDBNm + `" COMMENT =  "`+ giventargetDBNm +` database created by stored procedure on `+ current_datetime + `";`;
+           if (backupType == "TABLE"){              
+              
+              sqlCmd = `CREATE ` + targetBackupType + ` DATABASE IF NOT EXISTS "` + giventargetDBNm + `" COMMENT =  "`+ giventargetDBNm +` database created by stored procedure on `+ current_datetime + `";`;
               result += sqlCmd + "\n";
               snowflake.execute( {sqlText: sqlCmd} );
 
@@ -142,20 +166,20 @@ AS $$
               result += sqlCmd + "\n";
               snowflake.execute( {sqlText: sqlCmd} );
                 
-              sqlCmd = `CREATE TRANSIENT SCHEMA IF NOT EXISTS "` + sourceNm_2 + `" COMMENT =  "`+ sourceNm_2 +` schema created by stored procedure on `+ current_datetime + `";`;
+              sqlCmd = `CREATE ` + targetBackupType + ` SCHEMA IF NOT EXISTS "` + sourceNm_2 + `" COMMENT =  "`+ sourceNm_2 +` schema created by stored procedure on `+ current_datetime + `";`;
               result += sqlCmd + "\n";
               snowflake.execute( {sqlText: sqlCmd} );
               
               //Create a new backup of the source
-              sqlCmd = `CREATE OR REPLACE TRANSIENT `+ backupType +` "`+ targetNm_1 
+              sqlCmd = `CREATE OR REPLACE ` + targetBackupType + ` `+ backupType +` "`+ targetNm_1 
                 + `"."`+ targetNm_2 + `"."`+ targetNm_3 +`" CLONE "` + sourceNm_1 
                 + `"."`+ sourceNm_2 + `"."`+ sourceNm_3 +`" 
                  COMMENT =  '`+ backupType +` backup created by stored procedure on `+ current_datetime + `';`;    
               result += sqlCmd + "\n";
-              snowflake.execute( {sqlText: sqlCmd} );
+              snowflake.execute( {sqlText: sqlCmd} );              
             }
             else if (backupType == "SCHEMA"){
-              sqlCmd = `CREATE TRANSIENT DATABASE IF NOT EXISTS "` + giventargetDBNm + `" COMMENT =  '`+ giventargetDBNm +` database created by stored procedure on `+ current_datetime + `';`;
+              sqlCmd = `CREATE ` + targetBackupType + ` DATABASE IF NOT EXISTS "` + giventargetDBNm + `" COMMENT =  '`+ giventargetDBNm +` database created by stored procedure on `+ current_datetime + `';`;
               result += sqlCmd + "\n";
               snowflake.execute( {sqlText: sqlCmd} );
               
@@ -164,7 +188,7 @@ AS $$
               snowflake.execute( {sqlText: sqlCmd} );
                 
               //Create a new backup of the source
-              sqlCmd = `CREATE OR REPLACE TRANSIENT ` + backupType + ` "`+ targetNm_1 
+              sqlCmd = `CREATE OR REPLACE ` + targetBackupType + ` ` + backupType + ` "`+ targetNm_1 
                 + `"."`+targetNm_2+`" CLONE "` + sourceNm_1 
                 + `"."`+ sourceNm_2 + `" COMMENT =  '`+ backupType +` backup created by stored procedure on `+ current_datetime + `';`;    
               result += sqlCmd + "\n";
@@ -172,7 +196,7 @@ AS $$
             }
             else if (backupType == "DATABASE"){
               //Create a new backup of the source
-              sqlCmd = `CREATE OR REPLACE TRANSIENT ` + backupType + ` "` + backupTgtNm 
+              sqlCmd = `CREATE OR REPLACE ` + targetBackupType + ` ` + backupType + ` "` + backupTgtNm 
                 + `" CLONE "` + backupSrcNm 
                 + `" COMMENT =  '`+ backupType +` backup created by stored procedure on `+ current_datetime + `';`;
     
@@ -183,7 +207,7 @@ AS $$
         else if (backupMode == "PHYSICAL")
         {
             if (backupType == "TABLE"){
-                sqlCmd = `CREATE TRANSIENT DATABASE IF NOT EXISTS "` + giventargetDBNm + `" COMMENT = '`+ giventargetDBNm +` database created by stored procedure on `+ current_datetime + `';`;
+                sqlCmd = `CREATE ` + targetBackupType + ` DATABASE IF NOT EXISTS "` + giventargetDBNm + `" COMMENT = '`+ giventargetDBNm +` database created by stored procedure on `+ current_datetime + `';`;
                 result += sqlCmd + "\n";
                 snowflake.execute( {sqlText: sqlCmd} );
                                 
@@ -191,7 +215,7 @@ AS $$
                 result += sqlCmd + "\n";
                 snowflake.execute( {sqlText: sqlCmd} );
                 
-                sqlCmd = `CREATE TRANSIENT SCHEMA IF NOT EXISTS "` + sourceNm_2 + `" COMMENT =  '`+ sourceNm_2 +` schema created by stored procedure on `+ current_datetime + `';`;
+                sqlCmd = `CREATE ` + targetBackupType + ` SCHEMA IF NOT EXISTS "` + sourceNm_2 + `" COMMENT =  '`+ sourceNm_2 +` schema created by stored procedure on `+ current_datetime + `';`;
                 result += sqlCmd + "\n";
                 snowflake.execute( {sqlText: sqlCmd} );
 
@@ -199,13 +223,13 @@ AS $$
                 result += sqlCmd + "\n";
                 snowflake.execute( {sqlText: sqlCmd} );
                 
-                sqlCmd = `CREATE TRANSIENT TABLE IF NOT EXISTS "` + giventargetDBNm + `"."` + sourceNm_2 + `"."`+ sourceNm_3 +`" AS SELECT * FROM "` + sourceNm_1 
+                sqlCmd = `CREATE ` + targetBackupType + ` TABLE IF NOT EXISTS "` + giventargetDBNm + `"."` + sourceNm_2 + `"."`+ sourceNm_3 +`" AS SELECT * FROM "` + sourceNm_1 
                 + `"."`+ sourceNm_2 + `"."`+ sourceNm_3 +`";`;
                 result += sqlCmd + "\n";
                 snowflake.execute( {sqlText: sqlCmd} );
             }
             else if (backupType == "SCHEMA"){                
-                sqlCmd = `CREATE TRANSIENT DATABASE IF NOT EXISTS "` + giventargetDBNm + `" COMMENT =  '`+ giventargetDBNm +` database created by stored procedure on `+ current_datetime + `';`;
+                sqlCmd = `CREATE ` + targetBackupType + ` DATABASE IF NOT EXISTS "` + giventargetDBNm + `" COMMENT =  '`+ giventargetDBNm +` database created by stored procedure on `+ current_datetime + `';`;
                 result += sqlCmd + "\n";
                 snowflake.execute( {sqlText: sqlCmd} );
                 
@@ -213,7 +237,7 @@ AS $$
                 result += sqlCmd + "\n";
                 snowflake.execute( {sqlText: sqlCmd} );
                 
-                sqlCmd = `CREATE TRANSIENT SCHEMA IF NOT EXISTS "` + targetNm_2 + `" COMMENT =  '`+ targetNm_2 +` schema created by stored procedure on `+ current_datetime + `';`;
+                sqlCmd = `CREATE ` + targetBackupType + ` SCHEMA IF NOT EXISTS "` + targetNm_2 + `" COMMENT =  '`+ targetNm_2 +` schema created by stored procedure on `+ current_datetime + `';`;
                 result += sqlCmd + "\n";
                 snowflake.execute( {sqlText: sqlCmd} );
                 
@@ -221,7 +245,7 @@ AS $$
                 result += sqlCmd + "\n";
                 snowflake.execute( {sqlText: sqlCmd} );
                 
-                sqlCmd = `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='` + sourceNm_2 + `' AND TABLE_CATALOG='` + sourceNm_1 + `';`;
+                sqlCmd = `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' AND TABLE_SCHEMA='` + sourceNm_2 + `' AND TABLE_CATALOG='` + sourceNm_1 + `'`+ tablesQuery +`;`;
                 result += sqlCmd + "\n";
                 table_rs = snowflake.execute( {sqlText: sqlCmd } );                
               
@@ -236,13 +260,13 @@ AS $$
                 while (table_rs.next()) { 
                     tableNm = table_rs.getColumnValue(1);
                     //fullTableNm = backupTgtNm+"."+tableNm;
-                    sqlCmd = `CREATE TRANSIENT TABLE IF NOT EXISTS "` + tableNm + `" AS SELECT * FROM "`+ sourceNm_1 +`"."`+ sourceNm_2 +`"."`+ tableNm +`";`;
+                    sqlCmd = `CREATE ` + targetBackupType + ` TABLE "` + tableNm + `" IF NOT EXISTS AS SELECT * FROM "`+ sourceNm_1 +`"."`+ sourceNm_2 +`"."`+ tableNm +`";`;
                     result += sqlCmd + "\n";
                     snowflake.execute( {sqlText: sqlCmd} );                    
                 }     
             }
             else if (backupType == "DATABASE"){
-                sqlCmd = `CREATE TRANSIENT DATABASE IF NOT EXISTS "` + targetNm_1 + `" COMMENT =  '`+ targetNm_1 +` database created by stored procedure on `+ current_datetime + `';`;
+                sqlCmd = `CREATE ` + targetBackupType + ` DATABASE IF NOT EXISTS "` + targetNm_1 + `" COMMENT =  '`+ targetNm_1 +` database created by stored procedure on `+ current_datetime + `';`;
                 result += sqlCmd + "\n";
                 snowflake.execute( {sqlText: sqlCmd} );
                 
@@ -262,7 +286,7 @@ AS $$
                     sourceSchemaNm = schema_rs.getColumnValue(1);
                     targetSchemaNm = targetNm_1+"."+sourceSchemaNm;
                     
-                    sqlCmd = `CREATE TRANSIENT SCHEMA IF NOT EXISTS "` + sourceSchemaNm + `" COMMENT =  '`+ sourceSchemaNm +` schema created by stored procedure on `+ current_datetime + `';`;
+                    sqlCmd = `CREATE ` + targetBackupType + ` SCHEMA IF NOT EXISTS "` + sourceSchemaNm + `" COMMENT =  '`+ sourceSchemaNm +` schema created by stored procedure on `+ current_datetime + `';`;
                     result += sqlCmd + "\n";
                     snowflake.execute( {sqlText: sqlCmd} );
     
@@ -270,7 +294,7 @@ AS $$
                     result += sqlCmd + "\n";
                     snowflake.execute( {sqlText: sqlCmd} );
                 
-                    sqlCmd = `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='` + sourceSchemaNm + `' AND TABLE_CATALOG='` + sourceNm_1 + `';`;
+                    sqlCmd = `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' AND TABLE_SCHEMA='` + sourceSchemaNm + `' AND TABLE_CATALOG='` + sourceNm_1 + `'`+ tablesQuery +`;`;                    
                     result += sqlCmd + "\n";
                     table_rs = snowflake.execute( {sqlText: sqlCmd } );
                     
@@ -284,10 +308,8 @@ AS $$
                 
                     while (table_rs.next()) {
                         tableNm = table_rs.getColumnValue(1);
-                        completeTargetTableName = targetNm_1+"."+sourceSchemaNm+"."+tableNm;
-                        //completeSourceTableName = sourceNm_1+"."+sourceSchemaNm+"."+tableNm;
-                        //completeSourceTableName = CONCAT ('"',`+ sourceNm_1 +`,'"."',`+ sourceSchemaNm +`,'"."',`+ tableNm +`,'"');
-                        sqlCmd = `CREATE TRANSIENT TABLE IF NOT EXISTS "` + tableNm + `" AS SELECT * FROM "`+ sourceNm_1 +`"."`+ sourceSchemaNm +`"."`+ tableNm +`";`;
+                        completeTargetTableName = targetNm_1+"."+sourceSchemaNm+"."+tableNm;                        
+                        sqlCmd = `CREATE ` + targetBackupType + ` TABLE "` + tableNm + `" IF NOT EXISTS AS SELECT * FROM "`+ sourceNm_1 +`"."`+ sourceSchemaNm +`"."`+ tableNm +`";`;
                         result += sqlCmd + "\n";
                         snowflake.execute( {sqlText: sqlCmd} );
                     }          
